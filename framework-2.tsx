@@ -4,12 +4,18 @@ import React, { useState, useEffect, createContext } from 'react';
 import * as Y from 'yjs';
 import { WebrtcProvider } from 'y-webrtc';
 import { IndexeddbPersistence } from 'y-indexeddb';
-import Gun from 'gun';
+import Gun, { IGunInstance, IGunUserInstance } from 'gun';
 import 'gun/sea'; // For encryption and user authentication
 import { Workbox } from 'workbox-window';
 import { createRoot } from 'react-dom/client';
-import { Route, Router, useLocation } from 'wouter';
+import { Router, useLocation } from 'wouter';
 import { defineConfig } from 'vite';
+
+// Define the Ack interface
+interface Ack {
+  err?: string;
+  ok?: { [key: string]: any };
+}
 
 // Core Framework Configuration Types
 interface FrameworkConfig {
@@ -17,7 +23,7 @@ interface FrameworkConfig {
   modes: ['dev', 'prod', 'test'];
   crypto: {
     keySize: number;
-    saltLength: number;  // Length of salt to generate
+    saltLength: number; // Length of salt to generate
   };
   auth: {
     providers: string[];
@@ -36,7 +42,7 @@ interface FrameworkConfig {
 const CONFIG: FrameworkConfig = {
   v: '1.0.0',
   modes: ['dev', 'prod', 'test'],
-  crypto: { keySize: 256, saltLength: 32 },  // 32 bytes = 256 bits for salt
+  crypto: { keySize: 256, saltLength: 32 }, // 32 bytes = 256 bits for salt
   auth: { providers: ['google', 'github'], clientId: 'YOUR_CLIENT_ID' },
   db: { collections: ['users', 'data', 'sync'] },
   routes: { base: '/', dynamic: true },
@@ -111,9 +117,9 @@ class DB {
   private yDoc: Y.Doc;
   private persistence: IndexeddbPersistence;
   private provider: WebrtcProvider;
-  private gun: ReturnType<typeof Gun>;
+  private gun: IGunInstance;
 
-  constructor(gun: ReturnType<typeof Gun>) {
+  constructor(gun: IGunInstance) {
     this.yDoc = new Y.Doc();
     this.persistence = new IndexeddbPersistence('framework-db', this.yDoc);
     this.provider = new WebrtcProvider('framework-room', this.yDoc);
@@ -130,9 +136,12 @@ class DB {
 
   async set(k: string, v: any) {
     return new Promise<void>((resolve, reject) => {
-      this.gun.get(k).put(v, (ack) => {
-        if (ack.err) reject(new Error(ack.err));
-        else resolve();
+      this.gun.get(k).put(v, (ack: Ack) => {
+        if (ack.err) {
+          reject(new Error(ack.err));
+        } else {
+          resolve();
+        }
       });
     });
   }
@@ -144,15 +153,15 @@ class DB {
 
 // Authentication Manager using Gun
 class Auth {
-  private gunUser: ReturnType<typeof Gun>['user'];
+  private gunUser: IGunUserInstance;
 
-  constructor(private gun: ReturnType<typeof Gun>) {
+  constructor(private gun: IGunInstance) {
     this.gunUser = this.gun.user();
   }
 
   async createUser(alias: string, password: string): Promise<void> {
     return new Promise((resolve, reject) => {
-      this.gunUser.create(alias, password, (ack) => {
+      this.gunUser.create(alias, password, (ack: { err?: string; pub?: string }) => {
         if (ack.err) {
           reject(new Error(ack.err));
         } else {
@@ -164,7 +173,7 @@ class Auth {
 
   async authenticate(alias: string, password: string): Promise<void> {
     return new Promise((resolve, reject) => {
-      this.gunUser.auth(alias, password, (ack) => {
+      this.gunUser.auth(alias, password, (ack: { err?: string; sea?: any; pub?: string }) => {
         if (ack.err) {
           reject(new Error(ack.err));
         } else {
@@ -646,7 +655,7 @@ interface Service {
 class DatabaseService implements Service {
   private readonly db: DB;
 
-  constructor(private gun: ReturnType<typeof Gun>) {
+  constructor(private gun: IGunInstance) {
     this.db = new DB(gun);
   }
 
@@ -667,7 +676,7 @@ class DatabaseService implements Service {
 class AuthService implements Service {
   private readonly auth: Auth;
 
-  constructor(private gun: ReturnType<typeof Gun>) {
+  constructor(private gun: IGunInstance) {
     this.auth = new Auth(gun);
   }
 
@@ -729,8 +738,8 @@ class NetworkService implements Service {
 // Core Framework
 class CoreFramework {
   protected readonly container: Container;
-  protected readonly config: FrameworkConfig;
-  protected readonly gun: ReturnType<typeof Gun>;
+  public readonly config: FrameworkConfig; // Changed to public
+  protected readonly gun: IGunInstance;
 
   constructor(config: FrameworkConfig = CONFIG) {
     this.config = config;
@@ -787,7 +796,7 @@ class CoreFramework {
 }
 
 // Framework Context
-const FrameworkContext = createContext<CoreFramework | null>(null);
+const FrameworkContext = createContext<FrameworkImpl | null>(null); // Updated to FrameworkImpl
 
 export function useFramework() {
   const framework = React.useContext(FrameworkContext);
@@ -805,7 +814,7 @@ interface AppContextType {
   router: typeof AppRouter;
   test: TestInterface;
   plugins: typeof Plugins;
-  framework: CoreFramework;
+  framework: FrameworkImpl;
   state: AppState;
   setState: (state: Partial<AppState>) => void;
   network: NetworkManager;
@@ -859,7 +868,10 @@ class FrameworkImpl extends CoreFramework {
   }
 
   // Component Factory with proper typing
-  component<P extends BaseProps>(Component: React.ComponentType<P>, props: P = {} as P): React.ReactElement {
+  component<P extends BaseProps>(
+    Component: React.ComponentType<P>,
+    props: P = {} as P
+  ): React.ReactElement {
     return React.createElement(Component, props);
   }
 
@@ -953,7 +965,7 @@ export function FrameworkProvider({
   config?: FrameworkConfig;
   children: React.ReactNode;
 }) {
-  const [framework] = useState(() => new CoreFramework(config));
+  const [framework] = useState(() => new FrameworkImpl(config)); // Use FrameworkImpl
 
   return (
     <FrameworkContext.Provider value={framework}>
